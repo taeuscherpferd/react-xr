@@ -1,18 +1,18 @@
 import { Vector3, Quaternion, Euler, MathUtils, Object3D, Camera } from 'three'
 import { XRControllerState, XRInputSourceState, XRStore } from './internals.js'
 
-export type ControllerLocomotionTranslationOptions =
+export type XRControllerLocomotionTranslationOptions =
   | {
       speed?: number
     }
   | boolean
-export type ControllerLocomotionRotationOptions =
+export type XRControllerLocomotionRotationOptions =
   | ({
       deadZone?: number
     } & ({ type?: 'snap'; degrees?: number } | { type: 'smooth'; speed?: number }))
   | boolean
 
-// useControllerLocomotion defaults and constants
+// useXRControllerLocomotion defaults and constants
 const defaultSpeed = 2
 const defaultSmoothTurningSpeed = 2
 const defaultSnapDegrees = 45
@@ -22,6 +22,8 @@ const thumbstickPropName = 'xr-standard-thumbstick'
 const vectorHelper = new Vector3()
 const quaternionHelper = new Quaternion()
 const eulerHelper = new Euler()
+const positionHelper = new Vector3()
+const scaleHelper = new Vector3()
 
 /**
  * function for handling controller based locomotion in VR
@@ -35,15 +37,15 @@ const eulerHelper = new Euler()
  * @param rotationOptions.speed If `type` is 'smooth', this specifies the speed at which the user's view rotates.
  * @param translationControllerHand Specifies which hand will control the translation. Can be either 'left' or 'right'.
  */
-export function createControllerLocomotionUpdate() {
+export function createXRControllerLocomotionUpdate() {
   let canRotate = true
   return <T extends Array<any>>(
     target: Object3D | undefined | null | ((velocity: Vector3, rotationVelocityY: number, ...params: T) => void),
     store: XRStore<any>,
     camera: Camera,
     delta: number,
-    translationOptions: ControllerLocomotionTranslationOptions = {},
-    rotationOptions: ControllerLocomotionRotationOptions = {},
+    translationOptions: XRControllerLocomotionTranslationOptions = {},
+    rotationOptions: XRControllerLocomotionRotationOptions = {},
     translationControllerHand: Exclude<XRHandedness, 'none'> = 'left',
     ...params: T
   ) => {
@@ -94,7 +96,8 @@ export function createControllerLocomotionUpdate() {
       }
       const { speed = defaultSpeed } = translationOptions
       vectorHelper.set(translationXAxis * speed, 0, translationYAxis * speed)
-      vectorHelper.applyQuaternion(camera.getWorldQuaternion(quaternionHelper))
+      camera.matrixWorld.decompose(positionHelper, quaternionHelper, scaleHelper)
+      vectorHelper.applyQuaternion(quaternionHelper)
 
       if (yRotationChange) {
         vectorHelper.applyEuler(eulerHelper.set(0, yRotationChange, 0, 'YXZ'))

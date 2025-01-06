@@ -3,7 +3,6 @@ import {
   Camera,
   ColorRepresentation,
   Euler,
-  Intersection,
   Mesh,
   Object3D,
   QuadraticBezierCurve3,
@@ -47,6 +46,7 @@ const quaternionHelper = new Quaternion()
  * @param rayGroup must be placed directly into the scene
  */
 export function syncTeleportPointerRayGroup(space: Object3D, rayGroup: Object3D, deltaTimeMs: number) {
+  space.updateWorldMatrix(true, false)
   space.matrixWorld.decompose(rayGroup.position, quaternionHelper, rayGroup.scale)
   eulerHelper.setFromQuaternion(quaternionHelper)
   eulerHelper.z = 0
@@ -127,13 +127,13 @@ export class TeleportPointerRayModel extends Mesh<BufferGeometry, MeshLineMateri
 
   update(pointer: Pointer): void {
     const enabled = pointer.getEnabled()
-    if (!enabled || pointer.getButtonsDown().size === 0) {
+    const intersection = pointer.getIntersection()
+    if (!enabled || pointer.getButtonsDown().size === 0 || intersection == null) {
       this.visible = false
       return
     }
     this.visible = true
-    const intersection = pointer.getIntersection()
-    if (intersection?.details.type != 'lines') {
+    if (intersection.details.type != 'lines') {
       this.material.visibility = this.multiplier
       return
     }

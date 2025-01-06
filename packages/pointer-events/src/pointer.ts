@@ -1,4 +1,4 @@
-import { Object3D, Intersection as ThreeIntersection } from 'three'
+import { Object3D, OrthographicCamera, PerspectiveCamera } from 'three'
 import { Intersection } from './intersections/index.js'
 import { NativeEvent, NativeWheelEvent, PointerEvent, WheelEvent, emitPointerEvent } from './event.js'
 import { intersectPointerEventTargets } from './intersections/utils.js'
@@ -9,8 +9,6 @@ const buttonsClickTimeKey = Symbol('buttonsClickTime')
 
 export type AllowedPointerEvents = 'none' | 'auto' | 'listener'
 
-export type ButtonsTime = Map<number, number>
-
 export type AllowedPointerEventsType =
   | 'all'
   | ((poinerId: number, pointerType: string, pointerState: unknown) => boolean)
@@ -19,25 +17,12 @@ export type AllowedPointerEventsType =
 
 declare module 'three' {
   interface Object3D {
-    _listeners?: Record<string, Array<(event: unknown) => void> | undefined>
-    /**
-     * @default "listener"
-     */
-    pointerEvents?: AllowedPointerEvents
-    /**
-     * @default "all"
-     */
-    pointerEventsType?: AllowedPointerEventsType
-    /**
-     * @default 0
-     * sorted by highest number first
-     * (just like a higher renderOrder number will result in rendering over the previous - if depthTest is false)
-     */
-    pointerEventsOrder?: number
     [buttonsDownTimeKey]?: ButtonsTime
     [buttonsClickTimeKey]?: ButtonsTime
   }
 }
+
+type ButtonsTime = Map<number, number>
 
 export type PointerCapture = {
   object: Object3D
@@ -76,6 +61,10 @@ declare module 'three' {
     setPointerCapture(pointerId: number): void
     releasePointerCapture(pointerId: number): void
     hasPointerCapture(pointerId: number): boolean
+
+    intersectChildren?: boolean
+    interactableDescendants?: Array<Object3D>
+    ancestorsHaveListeners?: boolean
   }
 }
 
@@ -99,12 +88,15 @@ export function getPointerById(pointerId: number) {
   return pointerMap.get(pointerId)
 }
 
+export type GetCamera = () => PerspectiveCamera | OrthographicCamera
+
 export class Pointer {
   //state
   private prevIntersection: Intersection | undefined
   private intersection: Intersection | undefined
   private prevEnabled = true
   private enabled = true
+  private wheelIntersection: Intersection | undefined
 
   //derived state
   /**
@@ -116,15 +108,16 @@ export class Pointer {
   private buttonsDownTime: ButtonsTime = new Map()
   private readonly buttonsDown = new Set<number>()
 
-  //to handle interaction before first move
+  //to handle interaction before first move (after exit)
   private wasMoved = false
-  private onFirstMove: Array<() => void> = []
+  private onFirstMove: Array<(camera: PerspectiveCamera | OrthographicCamera) => void> = []
 
   constructor(
     public readonly id: number,
     public readonly type: string,
     public readonly state: any,
     public readonly intersector: Intersector,
+    private readonly getCamera: GetCamera,
     private readonly onMoveCommited?: (pointer: Pointer) => void,
     private readonly parentSetPointerCapture?: () => void,
     private readonly parentReleasePointerCapture?: () => void,
@@ -161,6 +154,9 @@ export class Pointer {
     return this.buttonsDown
   }
 
+  /**
+   * @returns undefined if no intersection was executed yet
+   */
   getIntersection(): Intersection | undefined {
     return this.intersection
   }
@@ -179,38 +175,30 @@ export class Pointer {
     }
     this.enabled = enabled
     if (commit) {
-      this.commit(nativeEvent)
+      this.commit(nativeEvent, false)
     }
   }
 
-  private computeIntersection(scene: Object3D, nativeEvent: NativeEvent) {
+  computeIntersection(scene: Object3D, nativeEvent: NativeEvent) {
     if (this.pointerCapture != null) {
       return this.intersector.intersectPointerCapture(this.pointerCapture, nativeEvent)
     }
     this.intersector.startIntersection(nativeEvent)
     intersectPointerEventTargets(scene, [this])
-    return this.intersector.finalizeIntersection()
+    return this.intersector.finalizeIntersection(scene)
   }
 
-  setIntersection(intersection: Intersection | undefined): void {
+  setIntersection(intersection: Intersection): void {
     this.intersection = intersection
   }
 
-  /**
-   * allows to separately compute and afterwards commit a move
-   * => do not forget to call commit after computeMove
-   * can be used to compute the current intersection and disable or enable the pointer before commiting the move
-   */
-  computeMove(scene: Object3D, nativeEvent: NativeEvent) {
-    this.intersection = this.computeIntersection(scene, nativeEvent)
-  }
-
-  commit(nativeEvent: NativeEvent) {
+  commit(nativeEvent: NativeEvent, emitMove: boolean) {
+    const camera = this.getCamera()
     const prevIntersection = this.prevEnabled ? this.prevIntersection : undefined
     const intersection = this.enabled ? this.intersection : undefined
     //pointer out
     if (prevIntersection != null && prevIntersection.object != intersection?.object) {
-      emitPointerEvent(new PointerEvent('pointerout', true, nativeEvent, this, prevIntersection))
+      emitPointerEvent(new PointerEvent('pointerout', true, nativeEvent, this, prevIntersection, camera))
     }
 
     const pointerLeft = this.pointerEntered
@@ -222,24 +210,24 @@ export class Pointer {
     const length = pointerLeft.length
     for (let i = 0; i < length; i++) {
       const object = pointerLeft[i]
-      emitPointerEvent(new PointerEvent('pointerleave', false, nativeEvent, this, prevIntersection!, object))
+      emitPointerEvent(new PointerEvent('pointerleave', false, nativeEvent, this, prevIntersection!, camera, object))
     }
 
     //pointer over
     if (intersection != null && prevIntersection?.object != intersection.object) {
-      emitPointerEvent(new PointerEvent('pointerover', true, nativeEvent, this, intersection))
+      emitPointerEvent(new PointerEvent('pointerover', true, nativeEvent, this, intersection, camera))
     }
 
     //pointer enter
     //inverse loop so that we emit enter from top -> bottom (root -> leaf)
     for (let i = this.pointerEnteredHelper.length - 1; i >= 0; i--) {
       const object = this.pointerEnteredHelper[i]
-      emitPointerEvent(new PointerEvent('pointerenter', false, nativeEvent, this, intersection!, object))
+      emitPointerEvent(new PointerEvent('pointerenter', false, nativeEvent, this, intersection!, camera, object))
     }
 
     //pointer move
-    if (intersection != null) {
-      emitPointerEvent(new PointerEvent('pointermove', true, nativeEvent, this, intersection))
+    if (emitMove && intersection != null) {
+      emitPointerEvent(new PointerEvent('pointermove', true, nativeEvent, this, intersection, camera))
     }
 
     this.prevIntersection = this.intersection
@@ -249,7 +237,7 @@ export class Pointer {
       this.wasMoved = true
       const length = this.onFirstMove.length
       for (let i = 0; i < length; i++) {
-        this.onFirstMove[i]()
+        this.onFirstMove[i](camera)
       }
       this.onFirstMove.length = 0
     }
@@ -261,8 +249,19 @@ export class Pointer {
    * computes and commits a move
    */
   move(scene: Object3D, nativeEvent: NativeEvent): void {
-    this.computeMove(scene, nativeEvent)
-    this.commit(nativeEvent)
+    this.intersection = this.computeIntersection(scene, nativeEvent)
+    this.commit(nativeEvent, true)
+  }
+
+  /**
+   * emits a move without (re-)computing the intersection
+   * just emitting a move event to the current intersection
+   */
+  emitMove(nativeEvent: NativeEvent) {
+    if (this.intersection == null) {
+      return
+    }
+    emitPointerEvent(new PointerEvent('pointermove', true, nativeEvent, this, this.intersection, this.getCamera()))
   }
 
   down(nativeEvent: NativeEvent & { button: number }): void {
@@ -278,7 +277,7 @@ export class Pointer {
       return
     }
     //pointer down
-    emitPointerEvent(new PointerEvent('pointerdown', true, nativeEvent, this, this.intersection))
+    emitPointerEvent(new PointerEvent('pointerdown', true, nativeEvent, this, this.intersection, this.getCamera()))
 
     //store button down times on object and on pointer
     const { object } = this.intersection
@@ -299,7 +298,6 @@ export class Pointer {
     if (this.intersection == null) {
       return
     }
-
     const { contextMenuButton = 2, dblClickThresholdMs = 500, clickThesholdMs = 300 } = this.options
 
     this.pointerCapture = undefined
@@ -311,20 +309,22 @@ export class Pointer {
       clickThesholdMs,
     )
 
+    const camera = this.getCamera()
+
     //context menu
     if (isClicked && nativeEvent.button === contextMenuButton) {
-      emitPointerEvent(new PointerEvent('contextmenu', true, nativeEvent, this, this.intersection))
+      emitPointerEvent(new PointerEvent('contextmenu', true, nativeEvent, this, this.intersection, camera))
     }
 
     //poinerup
-    emitPointerEvent(new PointerEvent('pointerup', true, nativeEvent, this, this.intersection))
+    emitPointerEvent(new PointerEvent('pointerup', true, nativeEvent, this, this.intersection, camera))
 
     if (!isClicked || nativeEvent.button === contextMenuButton) {
       return
     }
 
     //click
-    emitPointerEvent(new PointerEvent('click', true, nativeEvent, this, this.intersection))
+    emitPointerEvent(new PointerEvent('click', true, nativeEvent, this, this.intersection, camera))
 
     //dblclick
     const { object } = this.intersection
@@ -336,7 +336,7 @@ export class Pointer {
       return
     }
 
-    emitPointerEvent(new PointerEvent('dblclick', true, nativeEvent, this, this.intersection))
+    emitPointerEvent(new PointerEvent('dblclick', true, nativeEvent, this, this.intersection, camera))
     buttonsClickTime.delete(nativeEvent.button)
   }
 
@@ -352,41 +352,56 @@ export class Pointer {
       return
     }
     //pointer cancel
-    emitPointerEvent(new PointerEvent('pointercancel', true, nativeEvent, this, this.intersection))
+    emitPointerEvent(new PointerEvent('pointercancel', true, nativeEvent, this, this.intersection, this.getCamera()))
   }
 
-  wheel(scene: Object3D, nativeEvent: NativeWheelEvent, useCurrentIntersection: boolean): void {
+  wheel(scene: Object3D, nativeEvent: NativeWheelEvent, useMoveIntersection: boolean = false): void {
     if (!this.enabled) {
       return
     }
-    let intersection = this.intersection
-    if (!useCurrentIntersection) {
-      intersection = this.computeIntersection(scene, nativeEvent)
-    }
-    if (!this.wasMoved && useCurrentIntersection) {
-      this.onFirstMove.push(this.cancel.bind(this, nativeEvent))
+    if (!this.wasMoved && useMoveIntersection) {
+      this.onFirstMove.push(this.wheel.bind(this, scene, nativeEvent, useMoveIntersection))
       return
     }
+    if (!useMoveIntersection) {
+      this.wheelIntersection = this.computeIntersection(scene, nativeEvent)
+    }
+    const intersection = useMoveIntersection ? this.intersection : this.wheelIntersection
     if (intersection == null) {
       return
     }
     //wheel
-    emitPointerEvent(new WheelEvent(nativeEvent, this, intersection))
+    emitPointerEvent(new WheelEvent(nativeEvent, this, intersection, this.getCamera()))
+  }
+
+  emitWheel(nativeEvent: NativeWheelEvent, useMoveIntersection: boolean = false): void {
+    if (!this.enabled) {
+      return
+    }
+    if (!this.wasMoved && useMoveIntersection) {
+      this.onFirstMove.push(this.emitWheel.bind(this, nativeEvent, useMoveIntersection))
+      return
+    }
+    const intersection = useMoveIntersection ? this.intersection : this.wheelIntersection
+    if (intersection == null) {
+      return
+    }
+    //wheel
+    emitPointerEvent(new WheelEvent(nativeEvent, this, intersection, this.getCamera()))
   }
 
   exit(nativeEvent: NativeEvent): void {
-    if (!this.wasMoved) {
-      this.onFirstMove.push(this.exit.bind(this, nativeEvent))
-      return
+    if (this.wasMoved) {
+      //reset state
+      if (this.pointerCapture != null) {
+        this.parentReleasePointerCapture?.()
+        this.pointerCapture = undefined
+      }
+      this.intersection = undefined
+      this.commit(nativeEvent, false)
     }
-
-    //reset state
-    if (this.pointerCapture != null) {
-      this.parentReleasePointerCapture?.()
-      this.pointerCapture = undefined
-    }
-    this.intersection = undefined
-    this.commit(nativeEvent)
+    this.onFirstMove.length = 0
+    this.wasMoved = false
   }
 }
 

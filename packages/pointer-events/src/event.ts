@@ -1,7 +1,8 @@
-import { BaseEvent, Face, Object3D, Quaternion, Vector2, Vector3 } from 'three'
-import { Intersection } from './intersections/index.js'
+import { BaseEvent, Face, Object3D, Quaternion, Ray, Vector2, Vector3 } from 'three'
+import { Intersection as ThreeIntersection } from './intersections/index.js'
 import { Pointer } from './pointer.js'
-import { getObjectListeners } from './utils.js'
+import type { Camera, IntersectionEvent, Intersection } from '@react-three/fiber/dist/declarations/src/core/events.js'
+import { HtmlEvent, Properties } from './html-event.js'
 
 export type PointerEventsMap = {
   [Key in keyof PointerEventsHandlers as EventHandlerToEventName<Key>]-?: PointerEventsHandlers[Key]
@@ -26,43 +27,33 @@ export type PointerEventsHandlers = {
 
 export type NativeEvent = {
   timeStamp: number
-  shiftKey?: boolean
-  metaKey?: boolean
-  ctrlKey?: boolean
-  altKey?: boolean
   button?: number
 }
 
+const helperVector = new Vector3()
+
 export class PointerEvent<E extends NativeEvent = globalThis.PointerEvent>
-  implements Intersection, BaseEvent<keyof PointerEventsMap>
+  extends HtmlEvent<E>
+  implements
+    ThreeIntersection,
+    BaseEvent<keyof PointerEventsMap>,
+    IntersectionEvent<E>,
+    Properties<
+      Omit<
+        globalThis.PointerEvent | globalThis.MouseEvent | globalThis.WheelEvent,
+        'target' | 'currentTarget' | 'srcElement'
+      >
+    >
 {
   //--- pointer events data
   get pointerId(): number {
-    return this.pointer.id
+    return this.internalPointer.id
   }
   get pointerType(): string {
-    return this.pointer.type
+    return this.internalPointer.type
   }
   get pointerState(): any {
-    return this.pointer.state
-  }
-  get timeStamp(): number {
-    return this.nativeEvent.timeStamp
-  }
-  get button(): number | undefined {
-    return this.nativeEvent.button
-  }
-  get shiftKey(): boolean {
-    return this.nativeEvent.shiftKey ?? false
-  }
-  get metaKey(): boolean {
-    return this.nativeEvent.metaKey ?? false
-  }
-  get ctrlKey(): boolean {
-    return this.nativeEvent.ctrlKey ?? false
-  }
-  get altKey(): boolean {
-    return this.nativeEvent.altKey ?? false
+    return this.internalPointer.state
   }
 
   //--- intersection data
@@ -114,39 +105,114 @@ export class PointerEvent<E extends NativeEvent = globalThis.PointerEvent>
   get localPoint(): Vector3 {
     return this.intersection.localPoint
   }
-  get details(): Intersection['details'] {
+  get details(): ThreeIntersection['details'] {
     return this.intersection.details
   }
 
-  /** same as target */
+  /** same as object */
   get target(): Object3D {
     return this.object
   }
-  /** same as currentTarget */
+  /** same as currentObject */
   get currentTarget(): Object3D {
     return this.currentObject
   }
+  /** same as currentObject */
+  get eventObject(): Object3D {
+    return this.currentObject
+  }
+  /** same as object */
+  get srcElement(): Object3D {
+    return this.currentObject
+  }
 
-  //the stop propagation functions will be set while propagating
-  stopPropagation!: () => void
-  stopImmediatePropagation!: () => void
+  private _pointer: Vector2 | undefined
+  get pointer(): Vector2 {
+    if (this._pointer == null) {
+      helperVector.copy(this.intersection.point).project(this.camera)
+      this._pointer = new Vector2(helperVector.x, helperVector.y)
+    }
+    return this._pointer
+  }
+
+  private _ray: Ray | undefined
+  get ray(): Ray {
+    if (this._ray == null) {
+      this._ray = new Ray()
+      this._ray.origin.setFromMatrixPosition(this.camera.matrixWorld)
+      this._ray.lookAt(this.point)
+    }
+    return this._ray
+  }
+
+  private _intersections: Array<Intersection> = []
+  get intersections(): Intersection[] {
+    if (this._intersections == null) {
+      this._intersections = [{ ...this.intersection, eventObject: this.currentObject }]
+    }
+    return this._intersections
+  }
+
+  private _unprojectedPoint: Vector3 | undefined
+  get unprojectedPoint(): Vector3 {
+    if (this._unprojectedPoint == null) {
+      const p = this.pointer
+      this._unprojectedPoint = new Vector3(p.x, p.y, 0).unproject(this.camera)
+    }
+    return this._unprojectedPoint
+  }
+
+  get stopped(): boolean {
+    return this.propagationState.stoppedImmediate || this.propagationState.stopped
+  }
+
+  get stoppedImmediate(): boolean {
+    return this.propagationState.stoppedImmediate
+  }
+
+  get delta(): number {
+    throw new Error(`not supported`)
+  }
 
   constructor(
     public readonly type: keyof PointerEventsMap,
     public readonly bubbles: boolean,
-    public readonly nativeEvent: E,
-    protected pointer: Pointer,
-    protected readonly intersection: Intersection,
+    nativeEvent: E,
+    protected internalPointer: Pointer,
+    public readonly intersection: ThreeIntersection,
+    public readonly camera: Camera,
     public readonly currentObject: Object3D = intersection.object,
     public readonly object: Object3D = currentObject,
-  ) {}
+    private readonly propagationState: { stopped: boolean; stoppedImmediate: boolean } = {
+      stopped: !bubbles,
+      stoppedImmediate: false,
+    },
+  ) {
+    super(nativeEvent)
+  }
+
+  stopPropagation(): void {
+    this.propagationState.stopped = true
+  }
+  stopImmediatePropagation(): void {
+    this.propagationState.stoppedImmediate = true
+  }
 
   /**
    * for internal use
    */
   retarget(currentObject: Object3D) {
-    const { type, bubbles, nativeEvent, pointer, intersection, target } = this
-    return new PointerEvent(type, bubbles, nativeEvent, pointer, intersection, currentObject, target)
+    return new PointerEvent(
+      this.type,
+      this.bubbles,
+      this.nativeEvent,
+      this.internalPointer,
+      this.intersection,
+      this.camera,
+      currentObject,
+      this.target,
+      this.propagationState,
+    )
   }
 }
 
@@ -172,19 +238,26 @@ export class WheelEvent extends PointerEvent<NativeWheelEvent> {
   constructor(
     nativeEvent: NativeWheelEvent,
     pointer: Pointer,
-    intersection: Intersection,
+    intersection: ThreeIntersection,
+    camera: Camera,
     currentObject?: Object3D,
     object?: Object3D,
   ) {
-    super('wheel', true, nativeEvent, pointer, intersection, currentObject, object)
+    super('wheel', true, nativeEvent, pointer, intersection, camera, currentObject, object)
   }
 
   /**
    * for internal use
    */
   retarget(currentObject: Object3D) {
-    const { type, bubbles, nativeEvent, pointer, intersection, target } = this
-    return new WheelEvent(nativeEvent, pointer, intersection, currentObject, target)
+    return new WheelEvent(
+      this.nativeEvent,
+      this.internalPointer,
+      this.intersection,
+      this.camera,
+      currentObject,
+      this.target,
+    )
   }
 }
 
@@ -197,23 +270,61 @@ function emitPointerEventRec(baseEvent: PointerEvent<NativeEvent>, currentObject
     return
   }
   const listeners = getObjectListeners(currentObject, baseEvent.type)
-  let propagationStopped = !baseEvent.bubbles
   if (listeners != null && listeners.length > 0) {
     const event = baseEvent.retarget(currentObject)
     const length = listeners.length
-    event.stopPropagation = () => (propagationStopped = true)
-
-    let loopStopped = false
-    event.stopImmediatePropagation = () => {
-      propagationStopped = true
-      loopStopped = true
-    }
-    for (let i = 0; i < length && !loopStopped; i++) {
+    for (let i = 0; i < length && !event.stoppedImmediate; i++) {
       listeners[i](event)
     }
   }
-  if (propagationStopped) {
+  if (baseEvent.stopped) {
     return
   }
   emitPointerEventRec(baseEvent, currentObject.parent)
+}
+
+const r3fEventToHandlerMap: Record<keyof PointerEventsMap, string> = {
+  click: 'onClick',
+  contextmenu: 'onContextMenu',
+  dblclick: 'onDoubleClick',
+  pointercancel: 'onPointerCancel',
+  pointerdown: 'onPointerDown',
+  pointerenter: 'onPointerEnter',
+  pointerleave: 'onPointerLeave',
+  pointermove: 'onPointerMove',
+  pointerout: 'onPointerOut',
+  pointerover: 'onPointerOver',
+  pointerup: 'onPointerUp',
+  wheel: 'onWheel',
+}
+
+export const listenerNames = Object.keys(r3fEventToHandlerMap)
+
+declare module 'three' {
+  interface Object3D {
+    _listeners?: Record<string, Array<(event: unknown) => void> | undefined>
+  }
+}
+
+function getObjectListeners<E>(
+  object: Object3D,
+  forEvent: keyof PointerEventsMap,
+): Array<(event: E) => void> | undefined {
+  if (object._listeners != null && forEvent in object._listeners) {
+    return object._listeners[forEvent]
+  }
+
+  //R3F compatibility
+  let handler: ((e: any) => void) | undefined
+  if (object.isVoidObject && forEvent === 'click' && object.parent?.__r3f != null) {
+    handler = object.parent.__r3f.root.getState().onPointerMissed
+  }
+  if (object.__r3f != null) {
+    handler = object.__r3f.handlers[r3fEventToHandlerMap[forEvent]]
+  }
+
+  if (handler == null) {
+    return undefined
+  }
+  return [handler]
 }

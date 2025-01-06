@@ -4,8 +4,8 @@ import { Physics, usePlane } from '@react-three/cannon'
 import { Cursor } from './helpers/Drag.js'
 import { Guy } from './components/Guy.jsx'
 import { Mug, Chair, Table, Lamp } from './components/Furniture.jsx'
-import { createXRStore, XR, XROrigin } from '@react-three/xr'
-import { Suspense } from 'react'
+import { createXRStore, noEvents, useXRControllerLocomotion, XR, XROrigin, PointerEvents } from '@react-three/xr'
+import { useRef, Suspense } from 'react'
 
 const store = createXRStore({
   hand: { touchPointer: false },
@@ -36,7 +36,14 @@ export function App() {
       >
         Enter VR
       </button>
-      <Canvas dpr={[1, 2]} shadows camera={{ position: [-40, 40, 40], fov: 25 }}>
+      <Canvas
+        onPointerMissed={() => console.log('missed')}
+        dpr={[1, 2]}
+        shadows
+        events={noEvents}
+        camera={{ position: [-40, 40, 40], fov: 25 }}
+      >
+        <PointerEvents />
         <OrbitControls />
         <XR store={store}>
           <color attach="background" args={['#171720']} />
@@ -55,12 +62,18 @@ export function App() {
             </Physics>
           </Suspense>
           <group position={[0, -5, 0]}>
-            <XROrigin scale={10} />
+            <ControlledXROrigin />
           </group>
         </XR>
       </Canvas>
     </>
   )
+}
+
+function ControlledXROrigin() {
+  const ref = useRef(null)
+  useXRControllerLocomotion(ref, { speed: 10 })
+  return <XROrigin ref={ref} scale={10} />
 }
 
 function Floor(props) {
