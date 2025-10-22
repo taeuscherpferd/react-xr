@@ -1,8 +1,8 @@
 import fs from 'fs'
 import { dirname, join, resolve } from 'path'
+import { fileURLToPath } from 'url'
 import { Converter } from 'typedoc'
 import { MarkdownPageEvent, MarkdownRendererEvent } from 'typedoc-plugin-markdown'
-import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
