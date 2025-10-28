@@ -1,7 +1,8 @@
-import { OrbitControls, Plane } from '@react-three/drei'
+import { OrbitControls } from '@react-three/drei'
 import { Canvas } from '@react-three/fiber'
 import { createXRStore, XR } from '@react-three/xr'
 import * as THREE from 'three'
+import { RedWalls } from './RedWalls.js'
 import './styles.css'
 
 const store = createXRStore()
@@ -16,9 +17,7 @@ export function App() {
         <color attach={'background'} args={['#3f3f3f']} />
         <gridHelper args={[50, 50, axisColor, gridColor]} />
         <XR store={store}>
-          <Plane args={[10, 10]} rotation={[-Math.PI / 2, 0, 0]}>
-            <meshBasicMaterial color={'darkgreen'} />
-          </Plane>
+          <RedWalls />
         </XR>
         <OrbitControls />
       </Canvas>
